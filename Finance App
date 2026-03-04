@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Finance" />
+  <meta name="theme-color" content="#F5F0E8" />
+  <title>Finance</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; }
+    body {
+      background: #F5F0E8;
+      font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-font-smoothing: antialiased;
+      overscroll-behavior: none;
+    }
+    input, select, button { font-family: inherit; }
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+    input::placeholder { color: #B8A898; }
+    select { appearance: none; -webkit-appearance: none; }
+    ::-webkit-scrollbar { display: none; }
+    * { -ms-overflow-style: none; scrollbar-width: none; }
+  </style>
+</head>
+<body>
+<div id="root" style="height:100%"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const TABS = [
+  { label: "Home",        icon: "⊞" },
+  { label: "Transactions",icon: "↕" },
+  { label: "Recurring",   icon: "↺" },
+  { label: "Budget",      icon: "◫" },
+  { label: "Savings",     icon: "◎" },
+  { label: "Net Worth",   icon: "◈" },
+];
+
+const CATEGORIES = ["Housing","Food","Transport","Health","Entertainment","Education","Clothing","Subscriptions","Other"];
+const FREQS = ["Daily","Weekly","Biweekly","Monthly","Yearly"];
+const fmt = n => "$" + Number(n).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+const today = () => new Date().toISOString().split("T")[0];
+
+const C = {
+  bg:"#F5F0E8", card:"#FDFAF4", border:"#E8E0D0",
+  text:"#2C2416", muted:"#8C7B65", faint:"#B8A898",
+  accent:"#C17F24", accentLight:"#F0E4C8",
+  green:"#4A7C59", greenLight:"#DCF0E4",
+  red:"#B85C3A", redLight:"#F5E8E3",
+  blue:"#3A6B8A",
+};
+
+// ── storage ──────────────────────────────────────────────────────────────────
+function useStorage(key, fallback) {
+  const [val, setVal] = useState(() => {
+    try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : fallback; } catch { return fallback; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+  }, [val]);
+  return [val, setVal];
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+function nextDue(startDate, freq) {
+  const t = new Date(); t.setHours(0,0,0,0);
+  let d = new Date(startDate);
+  if (d > t) return d;
+  while (d <= t) {
+    if      (freq==="Daily")    d.setDate(d.getDate()+1);
+    else if (freq==="Weekly")   d.setDate(d.getDate()+7);
+    else if (freq==="Biweekly") d.setDate(d.getDate()+14);
+    else if (freq==="Monthly")  d.setMonth(d.getMonth()+1);
+    else if (freq==="Yearly")   d.setFullYear(d.getFullYear()+1);
+  }
+  return d;
+}
+const daysUntil = d => Math.round((new Date(d) - new Date().setHours(0,0,0,0)) / 86400000);
+
+// ── primitives ───────────────────────────────────────────────────────────────
+const Card = ({children, style}) => (
+  <div style={{background:C.card, border:`1px solid ${C.border}`, borderRadius:18, padding:"16px", marginBottom:12, ...style}}>
+    {children}
+  </div>
+);
+
+const Label = ({children}) => (
+  <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>
+    {children}
+  </div>
+);
+
+const Tag = ({children, color, bg}) => (
+  <span style={{fontSize:11,fontWeight:600,background:bg||C.accentLight,color:color||C.accent,borderRadius:99,padding:"3px 9px"}}>
+    {children}
+  </span>
+);
+
+function Bar({pct, color}) {
+  const c = pct>90?C.red : pct>70?C.accent : (color||C.accent);
+  return (
+    <div style={{background:C.border,borderRadius:99,height:8,overflow:"hidden"}}>
+      <div style={{width:`${Math.min(pct,100)}%`,background:c,height:"100%",borderRadius:99,transition:"width .4s ease"}}/>
+    </div>
+  );
+}
+
+// big touch-friendly input
+const F = {
+  input: {
+    background:C.bg, border:`1.5px solid ${C.border}`, borderRadius:12,
+    color:C.text, padding:"14px 14px", fontSize:16,
+    width:"100%", outline:"none", display:"block",
+    WebkitAppearance:"none",
+  },
+};
+F.select = { ...F.input };
+
+const BigBtn = ({children, onClick, color, outline, style}) => (
+  <button onClick={onClick} style={{
+    width:"100%", padding:"15px", borderRadius:13,
+    background: outline ? "transparent" : (color||C.accent),
+    border: outline ? `1.5px solid ${C.border}` : "none",
+    color: outline ? C.muted : "#fff",
+    fontSize:15, fontWeight:700, cursor:"pointer",
+    letterSpacing:"-0.2px",
+    ...style
+  }}>{children}</button>
+);
+
+// ── Sheet (slide-up modal for forms) ─────────────────────────────────────────
+function Sheet({open, onClose, title, children}) {
+  if (!open) return null;
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:100}} onClick={onClose}>
+      <div style={{position:"absolute",inset:0,background:"rgba(44,36,22,0.35)"}}/>
+      <div onClick={e=>e.stopPropagation()} style={{
+        position:"absolute",bottom:0,left:0,right:0,
+        background:C.card,borderRadius:"22px 22px 0 0",
+        padding:"0 0 env(safe-area-inset-bottom)",
+        maxHeight:"92vh",overflowY:"auto",
+        boxShadow:"0 -4px 30px rgba(0,0,0,0.12)",
+      }}>
+        <div style={{display:"flex",justifyContent:"center",padding:"12px 0 0"}}>
+          <div style={{width:36,height:4,borderRadius:99,background:C.border}}/>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 18px 16px"}}>
+          <div style={{fontSize:18,fontWeight:800,color:C.text,letterSpacing:"-0.4px"}}>{title}</div>
+          <button onClick={onClose} style={{background:C.bg,border:"none",width:32,height:32,borderRadius:99,fontSize:17,color:C.muted,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
+        </div>
+        <div style={{padding:"0 18px 24px"}}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function Field({label, children}) {
+  return (
+    <div style={{marginBottom:14}}>
+      <div style={{fontSize:12,fontWeight:600,color:C.muted,marginBottom:6}}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+function Dashboard({transactions, budgets, goals, assets, liabilities, recurring, setTab}) {
+  const now = new Date(), mo=now.getMonth(), yr=now.getFullYear();
+  const mTx = transactions.filter(t=>{ const d=new Date(t.date); return d.getMonth()===mo&&d.getFullYear()===yr; });
+  const income   = mTx.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+  const expenses = mTx.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0);
+  const nw = assets.reduce((s,a)=>s+a.value,0) - liabilities.reduce((s,l)=>s+l.value,0);
+  const upcoming = recurring
+    .map(r=>({...r, due:nextDue(r.startDate,r.frequency)}))
+    .filter(r=>daysUntil(r.due)<=7)
+    .sort((a,b)=>a.due-b.due);
+  const recent = [...transactions].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,6);
+
+  return (
+    <div>
+      {/* Net worth hero */}
+      <div style={{background:`linear-gradient(135deg,#FAF5EC,#F0E8D8)`,border:`1px solid ${C.border}`,borderRadius:22,padding:"22px 20px",marginBottom:12,textAlign:"center"}}>
+        <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:6}}>Net Worth</div>
+        <div style={{fontSize:42,fontWeight:800,color:nw>=0?C.green:C.red,letterSpacing:"-1.5px",lineHeight:1}}>{fmt(nw)}</div>
+        <div style={{fontSize:12,color:C.faint,marginTop:8}}>
+          {new Date().toLocaleDateString("en-US",{month:"long",year:"numeric"})}
+        </div>
+      </div>
+
+      {/* Income / Expenses / Net row */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
+        {[["Income",income,C.green],["Expenses",expenses,C.red],["Net",income-expenses,income-expenses>=0?C.green:C.red]].map(([l,v,c])=>(
+          <div key={l} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:"12px 10px",textAlign:"center"}}>
+            <div style={{fontSize:10,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:4}}>{l}</div>
+            <div style={{fontSize:15,fontWeight:800,color:c,letterSpacing:"-0.5px"}}>{fmt(v)}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Upcoming recurring */}
+      {upcoming.length>0 && (
+        <Card style={{borderLeft:`3px solid ${C.accent}`}}>
+          <Label>Due This Week</Label>
+          {upcoming.map((r,i)=>{
+            const d=daysUntil(r.due);
+            return (
+              <div key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:i<upcoming.length-1?`1px solid ${C.border}`:"none"}}>
+                <div>
+                  <div style={{fontSize:14,fontWeight:600,color:C.text}}>{r.name}</div>
+                  <div style={{fontSize:12,color:C.faint}}>{r.frequency}</div>
+                </div>
+                <div style={{textAlign:"right",display:"flex",flexDirection:"column",gap:4,alignItems:"flex-end"}}>
+                  <div style={{fontSize:14,fontWeight:700,color:r.type==="income"?C.green:C.red}}>{r.type==="income"?"+":"-"}{fmt(r.amount)}</div>
+                  <Tag color={d===0?C.red:C.accent} bg={d===0?C.redLight:C.accentLight}>{d===0?"Today":`In ${d}d`}</Tag>
+                </div>
+              </div>
+            );
+          })}
+        </Card>
+      )}
+
+      {/* Recent transactions */}
+      <Card>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <Label>Recent</Label>
+          <button onClick={()=>setTab(1)} style={{background:"none",border:"none",color:C.accent,fontSize:13,fontWeight:600,cursor:"pointer"}}>See all</button>
+        </div>
+        {recent.length ? recent.map((t,i)=>(
+          <div key={t.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:i<recent.length-1?`1px solid ${C.border}`:"none"}}>
+            <div style={{display:"flex",gap:10,alignItems:"center"}}>
+              <div style={{width:38,height:38,borderRadius:12,background:t.type==="income"?C.greenLight:C.redLight,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>
+                {t.type==="income"?"↑":"↓"}
+              </div>
+              <div>
+                <div style={{fontSize:14,color:C.text,fontWeight:600}}>{t.note||t.category}</div>
+                <div style={{fontSize:12,color:C.faint}}>{t.date}</div>
+              </div>
+            </div>
+            <span style={{fontWeight:700,fontSize:14,color:t.type==="income"?C.green:C.red,flexShrink:0,marginLeft:8}}>
+              {t.type==="income"?"+":"-"}{fmt(t.amount)}
+            </span>
+          </div>
+        )) : <div style={{color:C.faint,fontSize:14,textAlign:"center",padding:"28px 0"}}>No transactions yet</div>}
+      </Card>
+
+      {/* Goals summary */}
+      {goals.length>0 && (
+        <Card>
+          <Label>Savings Goals</Label>
+          {goals.map(g=>{
+            const pct=g.target?(g.saved/g.target)*100:0;
+            return (
+              <div key={g.id} style={{marginBottom:14}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:7}}>
+                  <span style={{fontSize:14,fontWeight:600,color:C.text}}>{g.name}</span>
+                  <span style={{fontSize:13,color:C.muted}}>{fmt(g.saved)} / {fmt(g.target)}</span>
+                </div>
+                <Bar pct={pct} color={C.green}/>
+              </div>
+            );
+          })}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ── Transactions ──────────────────────────────────────────────────────────────
+function Transactions({transactions, setTransactions}) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({type:"expense",amount:"",category:"Food",date:today(),note:""});
+  const [filter, setFilter] = useState("all");
+
+  const add = () => {
+    if (!form.amount||isNaN(form.amount)) return;
+    setTransactions(p=>[{...form,amount:parseFloat(form.amount),id:Date.now()},...p]);
+    setForm(f=>({...f,amount:"",note:""}));
+    setOpen(false);
+  };
+
+  const sorted = [...transactions].filter(t=>filter==="all"||t.type===filter).sort((a,b)=>new Date(b.date)-new Date(a.date));
+
+  return (
+    <div>
+      <BigBtn onClick={()=>setOpen(true)} style={{marginBottom:14}}>+ Add Transaction</BigBtn>
+
+      <div style={{display:"flex",gap:8,marginBottom:12}}>
+        {["all","income","expense"].map(f=>(
+          <button key={f} onClick={()=>setFilter(f)} style={{flex:1,padding:"10px 0",borderRadius:11,border:`1.5px solid ${filter===f?C.accent:C.border}`,background:filter===f?C.accentLight:C.card,color:filter===f?C.accent:C.muted,fontSize:13,fontWeight:600,cursor:"pointer"}}>
+            {f.charAt(0).toUpperCase()+f.slice(1)}
+          </button>
+        ))}
+      </div>
+
+      <Card style={{padding:"4px 16px"}}>
+        {sorted.length ? sorted.map((t,i)=>(
+          <div key={t.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"13px 0",borderBottom:i<sorted.length-1?`1px solid ${C.border}`:"none"}}>
+            <div style={{display:"flex",gap:12,alignItems:"center"}}>
+              <div style={{width:42,height:42,borderRadius:13,background:t.type==="income"?C.greenLight:C.redLight,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>
+                {t.type==="income"?"↑":"↓"}
+              </div>
+              <div>
+                <div style={{fontSize:15,color:C.text,fontWeight:600}}>{t.note||t.category}</div>
+                <div style={{fontSize:12,color:C.faint,marginTop:2}}>{t.date} · {t.category}</div>
+              </div>
+            </div>
+            <div style={{display:"flex",gap:10,alignItems:"center",flexShrink:0,marginLeft:8}}>
+              <span style={{fontWeight:700,fontSize:15,color:t.type==="income"?C.green:C.red}}>{t.type==="income"?"+":"-"}{fmt(t.amount)}</span>
+              <button onClick={()=>setTransactions(p=>p.filter(x=>x.id!==t.id))} style={{background:C.bg,border:"none",width:30,height:30,borderRadius:99,fontSize:16,color:C.faint,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+            </div>
+          </div>
+        )) : <div style={{color:C.faint,fontSize:14,textAlign:"center",padding:"40px 0"}}>No transactions yet</div>}
+      </Card>
+
+      <Sheet open={open} onClose={()=>setOpen(false)} title="Add Transaction">
+        <Field label="Type">
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            {["expense","income"].map(t=>(
+              <button key={t} onClick={()=>setForm(f=>({...f,type:t}))} style={{padding:"13px",borderRadius:12,border:`1.5px solid ${form.type===t?C.accent:C.border}`,background:form.type===t?C.accentLight:C.bg,color:form.type===t?C.accent:C.muted,fontSize:15,fontWeight:700,cursor:"pointer"}}>
+                {t.charAt(0).toUpperCase()+t.slice(1)}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Field label="Amount"><input type="number" inputMode="decimal" placeholder="0.00" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} style={F.input} autoFocus/></Field>
+        <Field label="Category">
+          <select value={form.category} onChange={e=>setForm(f=>({...f,category:e.target.value}))} style={F.select}>
+            {CATEGORIES.map(c=><option key={c}>{c}</option>)}
+          </select>
+        </Field>
+        <Field label="Date"><input type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))} style={F.input}/></Field>
+        <Field label="Note (optional)"><input placeholder="What was this for?" value={form.note} onChange={e=>setForm(f=>({...f,note:e.target.value}))} style={F.input}/></Field>
+        <BigBtn onClick={add}>Add Transaction</BigBtn>
+      </Sheet>
+    </div>
+  );
+}
+
+// ── Recurring ─────────────────────────────────────────────────────────────────
+function Recurring({recurring, setRecurring, setTransactions}) {
+  const empty = {name:"",type:"expense",amount:"",category:"Subscriptions",frequency:"Monthly",startDate:today()};
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState(empty);
+  const [confirmLog, setConfirmLog] = useState(null);
+
+  const add = () => {
+    if (!form.name||!form.amount) return;
+    setRecurring(p=>[...p,{...form,amount:parseFloat(form.amount),id:Date.now()}]);
+    setForm(empty); setOpen(false);
+  };
+
+  const logNow = r => {
+    const due = nextDue(r.startDate, r.frequency);
+    setTransactions(p=>[{type:r.type,amount:r.amount,category:r.category,date:due.toISOString().split("T")[0],note:r.name+" (recurring)",id:Date.now()},...p]);
+    setRecurring(p=>p.map(x=>x.id===r.id?{...x,startDate:due.toISOString().split("T")[0]}:x));
+    setConfirmLog(r.id); setTimeout(()=>setConfirmLog(null),2000);
+  };
+
+  const monthlyTotal = recurring.filter(r=>r.type==="expense").reduce((s,r)=>{
+    const m={Daily:30,Weekly:4.33,Biweekly:2.17,Monthly:1,Yearly:1/12}[r.frequency]||1;
+    return s+r.amount*m;
+  },0);
+
+  return (
+    <div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:"14px",textAlign:"center"}}>
+          <div style={{fontSize:10,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:4}}>Items</div>
+          <div style={{fontSize:24,fontWeight:800,color:C.text}}>{recurring.length}</div>
+        </div>
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:"14px",textAlign:"center"}}>
+          <div style={{fontSize:10,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:4}}>Est. Monthly</div>
+          <div style={{fontSize:24,fontWeight:800,color:C.red}}>{fmt(monthlyTotal)}</div>
+        </div>
+      </div>
+
+      <BigBtn onClick={()=>setOpen(true)} style={{marginBottom:14}}>+ Add Recurring</BigBtn>
+
+      {recurring.length ? recurring.map(r=>{
+        const due=nextDue(r.startDate,r.frequency), days=daysUntil(due), soon=days<=3;
+        return (
+          <Card key={r.id} style={{borderLeft:soon?`3px solid ${days===0?C.red:C.accent}`:""}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+              <div>
+                <div style={{fontSize:16,fontWeight:700,color:C.text}}>{r.name}</div>
+                <div style={{display:"flex",gap:6,marginTop:5}}><Tag>{r.frequency}</Tag><Tag>{r.category}</Tag></div>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:17,fontWeight:800,color:r.type==="income"?C.green:C.red}}>{r.type==="income"?"+":"-"}{fmt(r.amount)}</div>
+                <div style={{fontSize:12,color:soon?(days===0?C.red:C.accent):C.faint,fontWeight:soon?600:400,marginTop:3}}>{days===0?"Due today":`Due in ${days}d`}</div>
+              </div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              <BigBtn onClick={()=>logNow(r)} color={confirmLog===r.id?C.green:C.accent}>{confirmLog===r.id?"✓ Logged":"Log Now"}</BigBtn>
+              <BigBtn outline onClick={()=>setRecurring(p=>p.filter(x=>x.id!==r.id))}>Remove</BigBtn>
+            </div>
+          </Card>
+        );
+      }) : <Card><div style={{color:C.faint,fontSize:14,textAlign:"center",padding:"40px 0"}}>No recurring items yet</div></Card>}
+
+      <Sheet open={open} onClose={()=>setOpen(false)} title="Add Recurring">
+        <Field label="Name"><input placeholder="e.g. Rent, Netflix, Salary" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} style={F.input}/></Field>
+        <Field label="Type">
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            {["expense","income"].map(t=>(
+              <button key={t} onClick={()=>setForm(f=>({...f,type:t}))} style={{padding:"13px",borderRadius:12,border:`1.5px solid ${form.type===t?C.accent:C.border}`,background:form.type===t?C.accentLight:C.bg,color:form.type===t?C.accent:C.muted,fontSize:15,fontWeight:700,cursor:"pointer"}}>
+                {t.charAt(0).toUpperCase()+t.slice(1)}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Field label="Amount"><input type="number" inputMode="decimal" placeholder="0.00" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} style={F.input}/></Field>
+        <Field label="Category"><select value={form.category} onChange={e=>setForm(f=>({...f,category:e.target.value}))} style={F.select}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></Field>
+        <Field label="Frequency"><select value={form.frequency} onChange={e=>setForm(f=>({...f,frequency:e.target.value}))} style={F.select}>{FREQS.map(f=><option key={f}>{f}</option>)}</select></Field>
+        <Field label="Start Date"><input type="date" value={form.startDate} onChange={e=>setForm(f=>({...f,startDate:e.target.value}))} style={F.input}/></Field>
+        <BigBtn onClick={add}>Add Recurring</BigBtn>
+      </Sheet>
+    </div>
+  );
+}
+
+// ── Budget ────────────────────────────────────────────────────────────────────
+function Budget({budgets, setBudgets, transactions}) {
+  const now=new Date(),mo=now.getMonth(),yr=now.getFullYear();
+  const mEx=transactions.filter(t=>{const d=new Date(t.date);return t.type==="expense"&&d.getMonth()===mo&&d.getFullYear()===yr;});
+  return (
+    <Card>
+      <Label>Monthly Budgets</Label>
+      <div style={{fontSize:13,color:C.faint,marginBottom:16}}>Set 0 to skip a category.</div>
+      {budgets.map((b,i)=>{
+        const spent=mEx.filter(t=>t.category===b.category).reduce((s,t)=>s+t.amount,0);
+        const pct=b.limit?(spent/b.limit)*100:0;
+        return (
+          <div key={b.category} style={{marginBottom:22}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <span style={{fontSize:15,fontWeight:600,color:C.text}}>{b.category}</span>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <span style={{fontSize:13,color:pct>90?C.red:C.muted,fontWeight:500}}>{fmt(spent)}</span>
+                <span style={{color:C.faint,fontSize:13}}>/</span>
+                <input type="number" inputMode="decimal" value={b.limit||""} placeholder="—"
+                  onChange={e=>setBudgets(p=>p.map((x,j)=>j===i?{...x,limit:parseFloat(e.target.value)||0}:x))}
+                  style={{...F.input,width:72,textAlign:"right",padding:"6px 10px",fontSize:14}}/>
+              </div>
+            </div>
+            {b.limit>0&&<Bar pct={pct}/>}
+          </div>
+        );
+      })}
+    </Card>
+  );
+}
+
+// ── Savings ───────────────────────────────────────────────────────────────────
+function Savings({goals, setGoals}) {
+  const [open, setOpen] = useState(false);
+  const [contribOpen, setContribOpen] = useState(null);
+  const [form, setForm] = useState({name:"",target:"",saved:""});
+  const [contrib, setContrib] = useState("");
+
+  return (
+    <div>
+      <BigBtn onClick={()=>setOpen(true)} style={{marginBottom:14}}>+ New Goal</BigBtn>
+
+      {goals.map(g=>{
+        const pct=g.target?(g.saved/g.target)*100:0;
+        return (
+          <Card key={g.id}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+              <div>
+                <div style={{fontSize:17,fontWeight:800,color:C.text,letterSpacing:"-0.3px"}}>{g.name}</div>
+                <div style={{fontSize:13,color:C.muted,marginTop:3}}>{fmt(g.saved)} saved of {fmt(g.target)}</div>
+              </div>
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                <Tag color={C.green} bg={C.greenLight}>{pct.toFixed(0)}%</Tag>
+                <button onClick={()=>setGoals(p=>p.filter(x=>x.id!==g.id))} style={{background:C.bg,border:"none",width:30,height:30,borderRadius:99,fontSize:16,color:C.faint,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+              </div>
+            </div>
+            <Bar pct={pct} color={C.green}/>
+            <BigBtn onClick={()=>setContribOpen(g.id)} style={{marginTop:12}} color={C.green}>+ Add Contribution</BigBtn>
+            <Sheet open={contribOpen===g.id} onClose={()=>{setContribOpen(null);setContrib("");}} title={`Add to "${g.name}"`}>
+              <Field label="Amount"><input type="number" inputMode="decimal" placeholder="0.00" value={contrib} onChange={e=>setContrib(e.target.value)} style={F.input} autoFocus/></Field>
+              <BigBtn onClick={()=>{const amt=parseFloat(contrib);if(!amt)return;setGoals(p=>p.map(x=>x.id===g.id?{...x,saved:x.saved+amt}:x));setContribOpen(null);setContrib("");}} color={C.green}>Save Contribution</BigBtn>
+            </Sheet>
+          </Card>
+        );
+      })}
+      {!goals.length&&<Card><div style={{color:C.faint,fontSize:14,textAlign:"center",padding:"40px 0"}}>No goals yet</div></Card>}
+
+      <Sheet open={open} onClose={()=>setOpen(false)} title="New Savings Goal">
+        <Field label="Goal Name"><input placeholder="e.g. Argentina Trip" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} style={F.input} autoFocus/></Field>
+        <Field label="Target Amount ($)"><input type="number" inputMode="decimal" placeholder="1200" value={form.target} onChange={e=>setForm(f=>({...f,target:e.target.value}))} style={F.input}/></Field>
+        <Field label="Already Saved ($)"><input type="number" inputMode="decimal" placeholder="0" value={form.saved} onChange={e=>setForm(f=>({...f,saved:e.target.value}))} style={F.input}/></Field>
+        <BigBtn onClick={()=>{if(!form.name||!form.target)return;setGoals(p=>[...p,{...form,target:parseFloat(form.target),saved:parseFloat(form.saved)||0,id:Date.now()}]);setForm({name:"",target:"",saved:""});setOpen(false);}}>Add Goal</BigBtn>
+      </Sheet>
+    </div>
+  );
+}
+
+// ── Net Worth ─────────────────────────────────────────────────────────────────
+function NetWorth({assets, setAssets, liabilities, setLiabilities}) {
+  const [openAsset, setOpenAsset] = useState(false);
+  const [openLiab, setOpenLiab] = useState(false);
+  const [aF, setAF] = useState({name:"",value:""});
+  const [lF, setLF] = useState({name:"",value:""});
+  const tA=assets.reduce((s,a)=>s+a.value,0), tL=liabilities.reduce((s,l)=>s+l.value,0), nw=tA-tL;
+
+  const ItemList = ({items, onDel, color, lightBg}) => (
+    items.length ? items.map((item,i)=>(
+      <div key={item.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 0",borderBottom:i<items.length-1?`1px solid ${C.border}`:"none"}}>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          <div style={{width:36,height:36,borderRadius:10,background:lightBg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}>◈</div>
+          <span style={{fontSize:15,color:C.text,fontWeight:600}}>{item.name}</span>
+        </div>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          <span style={{fontWeight:700,color,fontSize:15}}>{fmt(item.value)}</span>
+          <button onClick={()=>onDel(item.id)} style={{background:C.bg,border:"none",width:30,height:30,borderRadius:99,fontSize:16,color:C.faint,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+        </div>
+      </div>
+    )) : <div style={{color:C.faint,fontSize:14,textAlign:"center",padding:"20px 0"}}>None added yet</div>
+  );
+
+  return (
+    <div>
+      <div style={{background:`linear-gradient(135deg,#FAF5EC,#F0E8D8)`,border:`1px solid ${C.border}`,borderRadius:22,padding:"22px 20px",marginBottom:12,textAlign:"center"}}>
+        <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:6}}>Total Net Worth</div>
+        <div style={{fontSize:42,fontWeight:800,color:nw>=0?C.green:C.red,letterSpacing:"-1.5px",lineHeight:1}}>{fmt(nw)}</div>
+        <div style={{fontSize:13,color:C.faint,marginTop:8}}>
+          <span style={{color:C.green}}>↑ {fmt(tA)}</span>
+          <span style={{margin:"0 10px"}}>·</span>
+          <span style={{color:C.red}}>↓ {fmt(tL)}</span>
+        </div>
+      </div>
+
+      <Card>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <Label>Assets · {fmt(tA)}</Label>
+          <button onClick={()=>setOpenAsset(true)} style={{background:C.greenLight,border:"none",borderRadius:99,padding:"6px 14px",color:C.green,fontSize:13,fontWeight:700,cursor:"pointer"}}>+ Add</button>
+        </div>
+        <ItemList items={assets} onDel={id=>setAssets(p=>p.filter(a=>a.id!==id))} color={C.green} lightBg={C.greenLight}/>
+      </Card>
+
+      <Card>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <Label>Liabilities · {fmt(tL)}</Label>
+          <button onClick={()=>setOpenLiab(true)} style={{background:C.redLight,border:"none",borderRadius:99,padding:"6px 14px",color:C.red,fontSize:13,fontWeight:700,cursor:"pointer"}}>+ Add</button>
+        </div>
+        <ItemList items={liabilities} onDel={id=>setLiabilities(p=>p.filter(l=>l.id!==id))} color={C.red} lightBg={C.redLight}/>
+      </Card>
+
+      <Sheet open={openAsset} onClose={()=>setOpenAsset(false)} title="Add Asset">
+        <Field label="Name"><input placeholder="e.g. Savings Account, Car" value={aF.name} onChange={e=>setAF(f=>({...f,name:e.target.value}))} style={F.input} autoFocus/></Field>
+        <Field label="Value ($)"><input type="number" inputMode="decimal" placeholder="0.00" value={aF.value} onChange={e=>setAF(f=>({...f,value:e.target.value}))} style={F.input}/></Field>
+        <BigBtn color={C.green} onClick={()=>{if(!aF.name||!aF.value)return;setAssets(p=>[...p,{...aF,value:parseFloat(aF.value),id:Date.now()}]);setAF({name:"",value:""});setOpenAsset(false);}}>Add Asset</BigBtn>
+      </Sheet>
+
+      <Sheet open={openLiab} onClose={()=>setOpenLiab(false)} title="Add Liability">
+        <Field label="Name"><input placeholder="e.g. Student Loan, Credit Card" value={lF.name} onChange={e=>setLF(f=>({...f,name:e.target.value}))} style={F.input} autoFocus/></Field>
+        <Field label="Value ($)"><input type="number" inputMode="decimal" placeholder="0.00" value={lF.value} onChange={e=>setLF(f=>({...f,value:e.target.value}))} style={F.input}/></Field>
+        <BigBtn color={C.red} onClick={()=>{if(!lF.name||!lF.value)return;setLiabilities(p=>[...p,{...lF,value:parseFloat(lF.value),id:Date.now()}]);setLF({name:"",value:""});setOpenLiab(false);}}>Add Liability</BigBtn>
+      </Sheet>
+    </div>
+  );
+}
+
+// ── App ───────────────────────────────────────────────────────────────────────
+function App() {
+  const [tab, setTab] = useState(0);
+  const [transactions, setTransactions] = useStorage("pf_tx",[]);
+  const [budgets,      setBudgets]       = useStorage("pf_budgets", CATEGORIES.map(c=>({category:c,limit:0})));
+  const [goals,        setGoals]         = useStorage("pf_goals",[]);
+  const [assets,       setAssets]        = useStorage("pf_assets",[]);
+  const [liabilities,  setLiabilities]   = useStorage("pf_liabilities",[]);
+  const [recurring,    setRecurring]     = useStorage("pf_recurring",[]);
+  const dueSoon = recurring.filter(r=>daysUntil(nextDue(r.startDate,r.frequency))<=3).length;
+
+  const pages = [
+    <Dashboard transactions={transactions} budgets={budgets} goals={goals} assets={assets} liabilities={liabilities} recurring={recurring} setTab={setTab}/>,
+    <Transactions transactions={transactions} setTransactions={setTransactions}/>,
+    <Recurring recurring={recurring} setRecurring={setRecurring} setTransactions={setTransactions}/>,
+    <Budget budgets={budgets} setBudgets={setBudgets} transactions={transactions}/>,
+    <Savings goals={goals} setGoals={setGoals}/>,
+    <NetWorth assets={assets} setAssets={setAssets} liabilities={liabilities} setLiabilities={setLiabilities}/>,
+  ];
+
+  return (
+    <div style={{height:"100%",display:"flex",flexDirection:"column",background:C.bg}}>
+      {/* Header */}
+      <div style={{background:C.card,borderBottom:`1px solid ${C.border}`,padding:"14px 18px 12px",paddingTop:"calc(14px + env(safe-area-inset-top))",flexShrink:0,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <div style={{width:30,height:30,borderRadius:9,background:C.accentLight,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>◈</div>
+          <span style={{fontWeight:800,fontSize:18,color:C.text,letterSpacing:"-0.5px"}}>Finance</span>
+        </div>
+        <div style={{fontSize:12,color:C.faint,fontWeight:500}}>
+          {new Date().toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})}
+        </div>
+      </div>
+
+      {/* Scrollable content */}
+      <div style={{flex:1,overflowY:"auto",padding:"14px 14px 0",WebkitOverflowScrolling:"touch"}}>
+        {pages[tab]}
+        <div style={{height:16}}/>
+      </div>
+
+      {/* Bottom nav */}
+      <div style={{background:C.card,borderTop:`1px solid ${C.border}`,display:"flex",paddingBottom:"env(safe-area-inset-bottom)",flexShrink:0}}>
+        {TABS.map((t,i)=>(
+          <button key={t.label} onClick={()=>setTab(i)} style={{flex:1,background:"none",border:"none",padding:"10px 0 8px",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:3,position:"relative",WebkitTapHighlightColor:"transparent"}}>
+            <span style={{fontSize:18,lineHeight:1,opacity:tab===i?1:0.5}}>{t.icon}</span>
+            <span style={{fontSize:9,fontWeight:700,color:tab===i?C.accent:C.faint,letterSpacing:"0.02em",textTransform:"uppercase"}}>{t.label.split(" ")[0]}</span>
+            {t.label==="Recurring"&&dueSoon>0&&(
+              <span style={{position:"absolute",top:7,left:"calc(50% + 4px)",width:15,height:15,borderRadius:99,background:C.red,color:"#fff",fontSize:9,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center"}}>{dueSoon}</span>
+            )}
+            {tab===i&&<span style={{position:"absolute",bottom:0,left:"25%",right:"25%",height:2,background:C.accent,borderRadius:99}}/>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.render(<App/>, document.getElementById("root"));
+</script>
+</body>
+</html>
