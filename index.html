@@ -28,12 +28,29 @@
     select { appearance: none; -webkit-appearance: none; }
     ::-webkit-scrollbar { display: none; }
     * { -ms-overflow-style: none; scrollbar-width: none; }
+
+    @keyframes slideUp {
+      from { transform: translateY(100%); }
+      to { transform: translateY(0); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    @keyframes toastIn {
+      from { transform: translateY(20px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    @keyframes toastOut {
+      from { transform: translateY(0); opacity: 1; }
+      to { transform: translateY(20px); opacity: 0; }
+    }
   </style>
 </head>
 <body>
 <div id="root" style="height:100%"></div>
 <script type="text/babel">
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect, useRef, useCallback } = React;
 
 const TABS = [
   { label: "Home",        icon: "⊞" },
@@ -46,8 +63,9 @@ const TABS = [
 
 const CATEGORIES = ["Housing","Food","Transport","Health","Entertainment","Education","Clothing","Subscriptions","Other"];
 const FREQS = ["Daily","Weekly","Biweekly","Monthly","Yearly"];
-const fmt = n => "$" + Number(n).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmt = n => (n < 0 ? "-$" : "$") + Math.abs(Number(n)).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
 const today = () => new Date().toISOString().split("T")[0];
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
 
 const C = {
   bg:"#F5F0E8", card:"#FDFAF4", border:"#E8E0D0",
@@ -65,7 +83,7 @@ function useStorage(key, fallback) {
   });
   useEffect(() => {
     try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
-  }, [val]);
+  }, [key, val]);
   return [val, setVal];
 }
 
@@ -73,17 +91,94 @@ function useStorage(key, fallback) {
 function nextDue(startDate, freq) {
   const t = new Date(); t.setHours(0,0,0,0);
   let d = new Date(startDate);
-  if (d > t) return d;
+  if (d > t) return new Date(d);
   while (d <= t) {
-    if      (freq==="Daily")    d.setDate(d.getDate()+1);
-    else if (freq==="Weekly")   d.setDate(d.getDate()+7);
-    else if (freq==="Biweekly") d.setDate(d.getDate()+14);
-    else if (freq==="Monthly")  d.setMonth(d.getMonth()+1);
-    else if (freq==="Yearly")   d.setFullYear(d.getFullYear()+1);
+    const next = new Date(d);
+    if      (freq==="Daily")    next.setDate(next.getDate()+1);
+    else if (freq==="Weekly")   next.setDate(next.getDate()+7);
+    else if (freq==="Biweekly") next.setDate(next.getDate()+14);
+    else if (freq==="Monthly")  next.setMonth(next.getMonth()+1);
+    else if (freq==="Yearly")   next.setFullYear(next.getFullYear()+1);
+    d = next;
   }
   return d;
 }
 const daysUntil = d => Math.round((new Date(d) - new Date().setHours(0,0,0,0)) / 86400000);
+
+// ── swipe hook ───────────────────────────────────────────────────────────────
+function useSwipe(onLeft, onRight) {
+  const touchStart = useRef(null);
+  const touchEnd = useRef(null);
+  const minSwipe = 60;
+
+  const onTouchStart = useCallback(e => {
+    touchEnd.current = null;
+    touchStart.current = e.targetTouches[0].clientX;
+  }, []);
+
+  const onTouchMove = useCallback(e => {
+    touchEnd.current = e.targetTouches[0].clientX;
+  }, []);
+
+  const onTouchEnd = useCallback(() => {
+    if (!touchStart.current || !touchEnd.current) return;
+    const dist = touchStart.current - touchEnd.current;
+    if (Math.abs(dist) > minSwipe) {
+      if (dist > 0) onLeft();
+      else onRight();
+    }
+  }, [onLeft, onRight]);
+
+  return { onTouchStart, onTouchMove, onTouchEnd };
+}
+
+// ── undo toast hook ──────────────────────────────────────────────────────────
+function useUndo() {
+  const [toast, setToast] = useState(null);
+  const timerRef = useRef(null);
+
+  const showUndo = useCallback((message, undoFn) => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setToast({ message, undoFn, fading: false });
+    timerRef.current = setTimeout(() => {
+      setToast(t => t ? { ...t, fading: true } : null);
+      setTimeout(() => setToast(null), 300);
+    }, 4000);
+  }, []);
+
+  const doUndo = useCallback(() => {
+    if (toast && toast.undoFn) toast.undoFn();
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setToast(null);
+  }, [toast]);
+
+  const dismiss = useCallback(() => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setToast(null);
+  }, []);
+
+  return { toast, showUndo, doUndo, dismiss };
+}
+
+// ── Toast component ──────────────────────────────────────────────────────────
+function Toast({ toast, onUndo, onDismiss }) {
+  if (!toast) return null;
+  return (
+    <div style={{
+      position:"fixed", bottom:80, left:14, right:14, zIndex:200,
+      background:"#2C2416", borderRadius:14, padding:"14px 16px",
+      display:"flex", justifyContent:"space-between", alignItems:"center",
+      boxShadow:"0 8px 30px rgba(0,0,0,0.2)",
+      animation: toast.fading ? "toastOut 0.3s ease forwards" : "toastIn 0.3s ease",
+    }}>
+      <span style={{color:"#fff",fontSize:14,fontWeight:500}}>{toast.message}</span>
+      <div style={{display:"flex",gap:8}}>
+        <button onClick={onUndo} style={{background:"none",border:"none",color:C.accent,fontSize:14,fontWeight:700,cursor:"pointer",padding:"4px 8px"}}>Undo</button>
+        <button onClick={onDismiss} style={{background:"none",border:"none",color:"#888",fontSize:14,cursor:"pointer",padding:"4px 4px"}}>✕</button>
+      </div>
+    </div>
+  );
+}
 
 // ── primitives ───────────────────────────────────────────────────────────────
 const Card = ({children, style}) => (
@@ -113,7 +208,6 @@ function Bar({pct, color}) {
   );
 }
 
-// big touch-friendly input
 const F = {
   input: {
     background:C.bg, border:`1.5px solid ${C.border}`, borderRadius:12,
@@ -124,30 +218,32 @@ const F = {
 };
 F.select = { ...F.input };
 
-const BigBtn = ({children, onClick, color, outline, style}) => (
-  <button onClick={onClick} style={{
+const BigBtn = ({children, onClick, color, outline, style, disabled}) => (
+  <button onClick={onClick} disabled={disabled} style={{
     width:"100%", padding:"15px", borderRadius:13,
-    background: outline ? "transparent" : (color||C.accent),
+    background: outline ? "transparent" : disabled ? C.border : (color||C.accent),
     border: outline ? `1.5px solid ${C.border}` : "none",
-    color: outline ? C.muted : "#fff",
-    fontSize:15, fontWeight:700, cursor:"pointer",
+    color: outline ? C.muted : disabled ? C.faint : "#fff",
+    fontSize:15, fontWeight:700, cursor: disabled ? "default" : "pointer",
     letterSpacing:"-0.2px",
+    opacity: disabled ? 0.6 : 1,
     ...style
   }}>{children}</button>
 );
 
-// ── Sheet (slide-up modal for forms) ─────────────────────────────────────────
+// ── Sheet ────────────────────────────────────────────────────────────────────
 function Sheet({open, onClose, title, children}) {
   if (!open) return null;
   return (
     <div style={{position:"fixed",inset:0,zIndex:100}} onClick={onClose}>
-      <div style={{position:"absolute",inset:0,background:"rgba(44,36,22,0.35)"}}/>
+      <div style={{position:"absolute",inset:0,background:"rgba(44,36,22,0.35)",animation:"fadeIn 0.2s ease"}}/>
       <div onClick={e=>e.stopPropagation()} style={{
         position:"absolute",bottom:0,left:0,right:0,
         background:C.card,borderRadius:"22px 22px 0 0",
         padding:"0 0 env(safe-area-inset-bottom)",
         maxHeight:"92vh",overflowY:"auto",
         boxShadow:"0 -4px 30px rgba(0,0,0,0.12)",
+        animation:"slideUp 0.25s ease",
       }}>
         <div style={{display:"flex",justifyContent:"center",padding:"12px 0 0"}}>
           <div style={{width:36,height:4,borderRadius:99,background:C.border}}/>
@@ -171,7 +267,71 @@ function Field({label, children}) {
   );
 }
 
-// ── Dashboard ─────────────────────────────────────────────────────────────────
+// ── Amount input with validation ─────────────────────────────────────────────
+function AmountInput({value, onChange, placeholder, autoFocus}) {
+  const [error, setError] = useState(false);
+  const handleChange = (e) => {
+    const v = e.target.value;
+    if (v !== "" && parseFloat(v) < 0) {
+      setError(true);
+    } else {
+      setError(false);
+    }
+    onChange(v);
+  };
+  return (
+    <div>
+      <input
+        type="number" inputMode="decimal" placeholder={placeholder || "0.00"}
+        value={value} onChange={handleChange}
+        style={{...F.input, borderColor: error ? C.red : C.border}}
+        min="0" autoFocus={autoFocus}
+      />
+      {error && <div style={{color:C.red,fontSize:12,marginTop:4}}>Amount must be positive</div>}
+    </div>
+  );
+}
+
+// ── Mini bar chart ───────────────────────────────────────────────────────────
+function SpendingChart({transactions}) {
+  const now = new Date(), mo=now.getMonth(), yr=now.getFullYear();
+  const mEx = transactions.filter(t=>{
+    const d=new Date(t.date);
+    return t.type==="expense" && d.getMonth()===mo && d.getFullYear()===yr;
+  });
+  const byCategory = {};
+  mEx.forEach(t => { byCategory[t.category] = (byCategory[t.category]||0) + t.amount; });
+  const entries = Object.entries(byCategory).sort((a,b) => b[1]-a[1]).slice(0, 6);
+  const max = entries.length ? Math.max(...entries.map(e=>e[1])) : 0;
+
+  if (!entries.length) return null;
+
+  const barColors = [C.accent, C.red, C.green, C.blue, "#8B6B4A", "#6B5B73"];
+
+  return (
+    <Card>
+      <Label>Spending by Category</Label>
+      {entries.map(([cat, amount], i) => (
+        <div key={cat} style={{marginBottom: i < entries.length-1 ? 10 : 0}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+            <span style={{fontSize:13,color:C.text,fontWeight:500}}>{cat}</span>
+            <span style={{fontSize:13,color:C.muted,fontWeight:600}}>{fmt(amount)}</span>
+          </div>
+          <div style={{background:C.border,borderRadius:99,height:6,overflow:"hidden"}}>
+            <div style={{
+              width:`${max ? (amount/max)*100 : 0}%`,
+              background: barColors[i % barColors.length],
+              height:"100%",borderRadius:99,
+              transition:"width .4s ease",
+            }}/>
+          </div>
+        </div>
+      ))}
+    </Card>
+  );
+}
+
+// ── Dashboard ────────────────────────────────────────────────────────────────
 function Dashboard({transactions, budgets, goals, assets, liabilities, recurring, setTab}) {
   const now = new Date(), mo=now.getMonth(), yr=now.getFullYear();
   const mTx = transactions.filter(t=>{ const d=new Date(t.date); return d.getMonth()===mo&&d.getFullYear()===yr; });
@@ -204,6 +364,9 @@ function Dashboard({transactions, budgets, goals, assets, liabilities, recurring
           </div>
         ))}
       </div>
+
+      {/* Spending chart */}
+      <SpendingChart transactions={transactions} />
 
       {/* Upcoming recurring */}
       {upcoming.length>0 && (
@@ -273,24 +436,51 @@ function Dashboard({transactions, budgets, goals, assets, liabilities, recurring
   );
 }
 
-// ── Transactions ──────────────────────────────────────────────────────────────
-function Transactions({transactions, setTransactions}) {
+// ── Transactions ─────────────────────────────────────────────────────────────
+function Transactions({transactions, setTransactions, showUndo}) {
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({type:"expense",amount:"",category:"Food",date:today(),note:""});
+  const [editItem, setEditItem] = useState(null);
+  const emptyForm = {type:"expense",amount:"",category:"Food",date:today(),note:""};
+  const [form, setForm] = useState(emptyForm);
   const [filter, setFilter] = useState("all");
 
-  const add = () => {
-    if (!form.amount||isNaN(form.amount)) return;
-    setTransactions(p=>[{...form,amount:parseFloat(form.amount),id:Date.now()},...p]);
-    setForm(f=>({...f,amount:"",note:""}));
+  const openEdit = (t) => {
+    setForm({type:t.type, amount:String(t.amount), category:t.category, date:t.date, note:t.note||""});
+    setEditItem(t);
+    setOpen(true);
+  };
+
+  const openAdd = () => {
+    setForm(emptyForm);
+    setEditItem(null);
+    setOpen(true);
+  };
+
+  const save = () => {
+    const amt = parseFloat(form.amount);
+    if (!amt || amt < 0) return;
+    if (editItem) {
+      setTransactions(p => p.map(t => t.id === editItem.id ? {...form, amount: amt, id: t.id} : t));
+    } else {
+      setTransactions(p => [{...form, amount: amt, id: uid()}, ...p]);
+    }
+    setForm(emptyForm);
+    setEditItem(null);
     setOpen(false);
+  };
+
+  const del = (t) => {
+    setTransactions(p => p.filter(x => x.id !== t.id));
+    showUndo(`Deleted "${t.note || t.category}"`, () => {
+      setTransactions(p => [...p, t]);
+    });
   };
 
   const sorted = [...transactions].filter(t=>filter==="all"||t.type===filter).sort((a,b)=>new Date(b.date)-new Date(a.date));
 
   return (
     <div>
-      <BigBtn onClick={()=>setOpen(true)} style={{marginBottom:14}}>+ Add Transaction</BigBtn>
+      <BigBtn onClick={openAdd} style={{marginBottom:14}}>+ Add Transaction</BigBtn>
 
       <div style={{display:"flex",gap:8,marginBottom:12}}>
         {["all","income","expense"].map(f=>(
@@ -303,24 +493,24 @@ function Transactions({transactions, setTransactions}) {
       <Card style={{padding:"4px 16px"}}>
         {sorted.length ? sorted.map((t,i)=>(
           <div key={t.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"13px 0",borderBottom:i<sorted.length-1?`1px solid ${C.border}`:"none"}}>
-            <div style={{display:"flex",gap:12,alignItems:"center"}}>
+            <div style={{display:"flex",gap:12,alignItems:"center",flex:1,minWidth:0,cursor:"pointer"}} onClick={()=>openEdit(t)}>
               <div style={{width:42,height:42,borderRadius:13,background:t.type==="income"?C.greenLight:C.redLight,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>
                 {t.type==="income"?"↑":"↓"}
               </div>
-              <div>
-                <div style={{fontSize:15,color:C.text,fontWeight:600}}>{t.note||t.category}</div>
+              <div style={{minWidth:0}}>
+                <div style={{fontSize:15,color:C.text,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.note||t.category}</div>
                 <div style={{fontSize:12,color:C.faint,marginTop:2}}>{t.date} · {t.category}</div>
               </div>
             </div>
             <div style={{display:"flex",gap:10,alignItems:"center",flexShrink:0,marginLeft:8}}>
               <span style={{fontWeight:700,fontSize:15,color:t.type==="income"?C.green:C.red}}>{t.type==="income"?"+":"-"}{fmt(t.amount)}</span>
-              <button onClick={()=>setTransactions(p=>p.filter(x=>x.id!==t.id))} style={{background:C.bg,border:"none",width:30,height:30,borderRadius:99,fontSize:16,color:C.faint,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+              <button onClick={()=>del(t)} style={{background:C.bg,border:"none",width:30,height:30,borderRadius:99,fontSize:16,color:C.faint,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
             </div>
           </div>
         )) : <div style={{color:C.faint,fontSize:14,textAlign:"center",padding:"40px 0"}}>No transactions yet</div>}
       </Card>
 
-      <Sheet open={open} onClose={()=>setOpen(false)} title="Add Transaction">
+      <Sheet open={open} onClose={()=>{setOpen(false);setEditItem(null);}} title={editItem ? "Edit Transaction" : "Add Transaction"}>
         <Field label="Type">
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
             {["expense","income"].map(t=>(
@@ -330,7 +520,9 @@ function Transactions({transactions, setTransactions}) {
             ))}
           </div>
         </Field>
-        <Field label="Amount"><input type="number" inputMode="decimal" placeholder="0.00" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} style={F.input} autoFocus/></Field>
+        <Field label="Amount">
+          <AmountInput value={form.amount} onChange={v=>setForm(f=>({...f,amount:v}))} autoFocus={!editItem} />
+        </Field>
         <Field label="Category">
           <select value={form.category} onChange={e=>setForm(f=>({...f,category:e.target.value}))} style={F.select}>
             {CATEGORIES.map(c=><option key={c}>{c}</option>)}
@@ -338,30 +530,60 @@ function Transactions({transactions, setTransactions}) {
         </Field>
         <Field label="Date"><input type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))} style={F.input}/></Field>
         <Field label="Note (optional)"><input placeholder="What was this for?" value={form.note} onChange={e=>setForm(f=>({...f,note:e.target.value}))} style={F.input}/></Field>
-        <BigBtn onClick={add}>Add Transaction</BigBtn>
+        <BigBtn onClick={save} disabled={!form.amount || parseFloat(form.amount) <= 0}>
+          {editItem ? "Save Changes" : "Add Transaction"}
+        </BigBtn>
       </Sheet>
     </div>
   );
 }
 
-// ── Recurring ─────────────────────────────────────────────────────────────────
-function Recurring({recurring, setRecurring, setTransactions}) {
-  const empty = {name:"",type:"expense",amount:"",category:"Subscriptions",frequency:"Monthly",startDate:today()};
+// ── Recurring ────────────────────────────────────────────────────────────────
+function Recurring({recurring, setRecurring, setTransactions, showUndo}) {
+  const emptyForm = {name:"",type:"expense",amount:"",category:"Subscriptions",frequency:"Monthly",startDate:today()};
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState(empty);
+  const [editItem, setEditItem] = useState(null);
+  const [form, setForm] = useState(emptyForm);
   const [confirmLog, setConfirmLog] = useState(null);
 
-  const add = () => {
-    if (!form.name||!form.amount) return;
-    setRecurring(p=>[...p,{...form,amount:parseFloat(form.amount),id:Date.now()}]);
-    setForm(empty); setOpen(false);
+  const openEdit = (r) => {
+    setForm({name:r.name, type:r.type, amount:String(r.amount), category:r.category, frequency:r.frequency, startDate:r.startDate});
+    setEditItem(r);
+    setOpen(true);
+  };
+
+  const openAdd = () => {
+    setForm(emptyForm);
+    setEditItem(null);
+    setOpen(true);
+  };
+
+  const save = () => {
+    const amt = parseFloat(form.amount);
+    if (!form.name || !amt || amt < 0) return;
+    if (editItem) {
+      setRecurring(p => p.map(r => r.id === editItem.id ? {...form, amount: amt, id: r.id} : r));
+    } else {
+      setRecurring(p => [...p, {...form, amount: amt, id: uid()}]);
+    }
+    setForm(emptyForm);
+    setEditItem(null);
+    setOpen(false);
   };
 
   const logNow = r => {
+    const todayStr = today();
+    setTransactions(p=>[{type:r.type,amount:r.amount,category:r.category,date:todayStr,note:r.name+" (recurring)",id:uid()},...p]);
     const due = nextDue(r.startDate, r.frequency);
-    setTransactions(p=>[{type:r.type,amount:r.amount,category:r.category,date:due.toISOString().split("T")[0],note:r.name+" (recurring)",id:Date.now()},...p]);
     setRecurring(p=>p.map(x=>x.id===r.id?{...x,startDate:due.toISOString().split("T")[0]}:x));
     setConfirmLog(r.id); setTimeout(()=>setConfirmLog(null),2000);
+  };
+
+  const del = (r) => {
+    setRecurring(p => p.filter(x => x.id !== r.id));
+    showUndo(`Deleted "${r.name}"`, () => {
+      setRecurring(p => [...p, r]);
+    });
   };
 
   const monthlyTotal = recurring.filter(r=>r.type==="expense").reduce((s,r)=>{
@@ -382,13 +604,13 @@ function Recurring({recurring, setRecurring, setTransactions}) {
         </div>
       </div>
 
-      <BigBtn onClick={()=>setOpen(true)} style={{marginBottom:14}}>+ Add Recurring</BigBtn>
+      <BigBtn onClick={openAdd} style={{marginBottom:14}}>+ Add Recurring</BigBtn>
 
       {recurring.length ? recurring.map(r=>{
         const due=nextDue(r.startDate,r.frequency), days=daysUntil(due), soon=days<=3;
         return (
-          <Card key={r.id} style={{borderLeft:soon?`3px solid ${days===0?C.red:C.accent}`:""}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+          <Card key={r.id} style={{borderLeft:soon?`3px solid ${days===0?C.red:C.accent}`:"",cursor:"pointer"}} >
+            <div onClick={()=>openEdit(r)} style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
               <div>
                 <div style={{fontSize:16,fontWeight:700,color:C.text}}>{r.name}</div>
                 <div style={{display:"flex",gap:6,marginTop:5}}><Tag>{r.frequency}</Tag><Tag>{r.category}</Tag></div>
@@ -400,13 +622,13 @@ function Recurring({recurring, setRecurring, setTransactions}) {
             </div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
               <BigBtn onClick={()=>logNow(r)} color={confirmLog===r.id?C.green:C.accent}>{confirmLog===r.id?"✓ Logged":"Log Now"}</BigBtn>
-              <BigBtn outline onClick={()=>setRecurring(p=>p.filter(x=>x.id!==r.id))}>Remove</BigBtn>
+              <BigBtn outline onClick={()=>del(r)}>Remove</BigBtn>
             </div>
           </Card>
         );
       }) : <Card><div style={{color:C.faint,fontSize:14,textAlign:"center",padding:"40px 0"}}>No recurring items yet</div></Card>}
 
-      <Sheet open={open} onClose={()=>setOpen(false)} title="Add Recurring">
+      <Sheet open={open} onClose={()=>{setOpen(false);setEditItem(null);}} title={editItem ? "Edit Recurring" : "Add Recurring"}>
         <Field label="Name"><input placeholder="e.g. Rent, Netflix, Salary" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} style={F.input}/></Field>
         <Field label="Type">
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
@@ -417,111 +639,251 @@ function Recurring({recurring, setRecurring, setTransactions}) {
             ))}
           </div>
         </Field>
-        <Field label="Amount"><input type="number" inputMode="decimal" placeholder="0.00" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} style={F.input}/></Field>
+        <Field label="Amount">
+          <AmountInput value={form.amount} onChange={v=>setForm(f=>({...f,amount:v}))} />
+        </Field>
         <Field label="Category"><select value={form.category} onChange={e=>setForm(f=>({...f,category:e.target.value}))} style={F.select}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></Field>
         <Field label="Frequency"><select value={form.frequency} onChange={e=>setForm(f=>({...f,frequency:e.target.value}))} style={F.select}>{FREQS.map(f=><option key={f}>{f}</option>)}</select></Field>
         <Field label="Start Date"><input type="date" value={form.startDate} onChange={e=>setForm(f=>({...f,startDate:e.target.value}))} style={F.input}/></Field>
-        <BigBtn onClick={add}>Add Recurring</BigBtn>
+        <BigBtn onClick={save} disabled={!form.name || !form.amount || parseFloat(form.amount) <= 0}>
+          {editItem ? "Save Changes" : "Add Recurring"}
+        </BigBtn>
       </Sheet>
     </div>
   );
 }
 
-// ── Budget ────────────────────────────────────────────────────────────────────
+// ── Budget ───────────────────────────────────────────────────────────────────
 function Budget({budgets, setBudgets, transactions}) {
   const now=new Date(),mo=now.getMonth(),yr=now.getFullYear();
   const mEx=transactions.filter(t=>{const d=new Date(t.date);return t.type==="expense"&&d.getMonth()===mo&&d.getFullYear()===yr;});
-  return (
-    <Card>
-      <Label>Monthly Budgets</Label>
-      <div style={{fontSize:13,color:C.faint,marginBottom:16}}>Set 0 to skip a category.</div>
-      {budgets.map((b,i)=>{
-        const spent=mEx.filter(t=>t.category===b.category).reduce((s,t)=>s+t.amount,0);
-        const pct=b.limit?(spent/b.limit)*100:0;
-        return (
-          <div key={b.category} style={{marginBottom:22}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-              <span style={{fontSize:15,fontWeight:600,color:C.text}}>{b.category}</span>
-              <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                <span style={{fontSize:13,color:pct>90?C.red:C.muted,fontWeight:500}}>{fmt(spent)}</span>
-                <span style={{color:C.faint,fontSize:13}}>/</span>
-                <input type="number" inputMode="decimal" value={b.limit||""} placeholder="—"
-                  onChange={e=>setBudgets(p=>p.map((x,j)=>j===i?{...x,limit:parseFloat(e.target.value)||0}:x))}
-                  style={{...F.input,width:72,textAlign:"right",padding:"6px 10px",fontSize:14}}/>
-              </div>
-            </div>
-            {b.limit>0&&<Bar pct={pct}/>}
-          </div>
-        );
-      })}
-    </Card>
-  );
-}
-
-// ── Savings ───────────────────────────────────────────────────────────────────
-function Savings({goals, setGoals}) {
-  const [open, setOpen] = useState(false);
-  const [contribOpen, setContribOpen] = useState(null);
-  const [form, setForm] = useState({name:"",target:"",saved:""});
-  const [contrib, setContrib] = useState("");
+  const totalBudget = budgets.reduce((s,b)=>s+(b.limit||0),0);
+  const totalSpent = mEx.reduce((s,t)=>s+t.amount,0);
 
   return (
     <div>
-      <BigBtn onClick={()=>setOpen(true)} style={{marginBottom:14}}>+ New Goal</BigBtn>
+      {totalBudget > 0 && (
+        <Card style={{marginBottom:12}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <Label>Total Budget</Label>
+            <span style={{fontSize:13,color:C.muted,fontWeight:600}}>{fmt(totalSpent)} / {fmt(totalBudget)}</span>
+          </div>
+          <Bar pct={totalBudget ? (totalSpent/totalBudget)*100 : 0} />
+        </Card>
+      )}
+      <Card>
+        <Label>Monthly Budgets</Label>
+        <div style={{fontSize:13,color:C.faint,marginBottom:16}}>Leave blank to skip a category.</div>
+        {budgets.map((b,i)=>{
+          const spent=mEx.filter(t=>t.category===b.category).reduce((s,t)=>s+t.amount,0);
+          const pct=b.limit?(spent/b.limit)*100:0;
+          const over = b.limit > 0 && spent > b.limit;
+          return (
+            <div key={b.category} style={{marginBottom:22}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:15,fontWeight:600,color:C.text}}>{b.category}</span>
+                  {over && <Tag color={C.red} bg={C.redLight}>Over</Tag>}
+                </div>
+                <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                  <span style={{fontSize:13,color:pct>90?C.red:C.muted,fontWeight:500}}>{fmt(spent)}</span>
+                  <span style={{color:C.faint,fontSize:13}}>/</span>
+                  <input type="number" inputMode="decimal" value={b.limit||""} placeholder="—"
+                    min="0"
+                    onChange={e=>{
+                      const v = parseFloat(e.target.value);
+                      if (e.target.value !== "" && v < 0) return;
+                      setBudgets(p=>p.map((x,j)=>j===i?{...x,limit:v||0}:x));
+                    }}
+                    style={{...F.input,width:72,textAlign:"right",padding:"6px 10px",fontSize:14}}/>
+                </div>
+              </div>
+              {b.limit>0&&<Bar pct={pct}/>}
+            </div>
+          );
+        })}
+      </Card>
+    </div>
+  );
+}
+
+// ── Savings ──────────────────────────────────────────────────────────────────
+function Savings({goals, setGoals, showUndo}) {
+  const [open, setOpen] = useState(false);
+  const [contribOpen, setContribOpen] = useState(null);
+  const [editItem, setEditItem] = useState(null);
+  const [form, setForm] = useState({name:"",target:"",saved:""});
+  const [contrib, setContrib] = useState("");
+  const [contribError, setContribError] = useState("");
+
+  const openEdit = (g) => {
+    setForm({name:g.name, target:String(g.target), saved:String(g.saved)});
+    setEditItem(g);
+    setOpen(true);
+  };
+
+  const openAdd = () => {
+    setForm({name:"",target:"",saved:""});
+    setEditItem(null);
+    setOpen(true);
+  };
+
+  const saveGoal = () => {
+    const target = parseFloat(form.target);
+    const saved = parseFloat(form.saved) || 0;
+    if (!form.name || !target || target < 0 || saved < 0) return;
+    if (editItem) {
+      setGoals(p => p.map(g => g.id === editItem.id ? {name:form.name, target, saved, id:g.id} : g));
+    } else {
+      setGoals(p => [...p, {name:form.name, target, saved, id:uid()}]);
+    }
+    setForm({name:"",target:"",saved:""});
+    setEditItem(null);
+    setOpen(false);
+  };
+
+  const addContribution = (g) => {
+    const amt = parseFloat(contrib);
+    if (!amt || amt < 0) return;
+    const newSaved = g.saved + amt;
+    if (newSaved > g.target) {
+      setContribError(`This would exceed the goal by ${fmt(newSaved - g.target)}. Max: ${fmt(g.target - g.saved)}`);
+      return;
+    }
+    setGoals(p => p.map(x => x.id === g.id ? {...x, saved: newSaved} : x));
+    setContribOpen(null);
+    setContrib("");
+    setContribError("");
+  };
+
+  const del = (g) => {
+    setGoals(p => p.filter(x => x.id !== g.id));
+    showUndo(`Deleted "${g.name}"`, () => {
+      setGoals(p => [...p, g]);
+    });
+  };
+
+  return (
+    <div>
+      <BigBtn onClick={openAdd} style={{marginBottom:14}}>+ New Goal</BigBtn>
 
       {goals.map(g=>{
         const pct=g.target?(g.saved/g.target)*100:0;
+        const complete = pct >= 100;
         return (
           <Card key={g.id}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
-              <div>
+              <div style={{cursor:"pointer",flex:1}} onClick={()=>openEdit(g)}>
                 <div style={{fontSize:17,fontWeight:800,color:C.text,letterSpacing:"-0.3px"}}>{g.name}</div>
                 <div style={{fontSize:13,color:C.muted,marginTop:3}}>{fmt(g.saved)} saved of {fmt(g.target)}</div>
               </div>
               <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                <Tag color={C.green} bg={C.greenLight}>{pct.toFixed(0)}%</Tag>
-                <button onClick={()=>setGoals(p=>p.filter(x=>x.id!==g.id))} style={{background:C.bg,border:"none",width:30,height:30,borderRadius:99,fontSize:16,color:C.faint,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+                <Tag color={complete?"#fff":C.green} bg={complete?C.green:C.greenLight}>{complete?"Done!":pct.toFixed(0)+"%"}</Tag>
+                <button onClick={()=>del(g)} style={{background:C.bg,border:"none",width:30,height:30,borderRadius:99,fontSize:16,color:C.faint,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
               </div>
             </div>
             <Bar pct={pct} color={C.green}/>
-            <BigBtn onClick={()=>setContribOpen(g.id)} style={{marginTop:12}} color={C.green}>+ Add Contribution</BigBtn>
-            <Sheet open={contribOpen===g.id} onClose={()=>{setContribOpen(null);setContrib("");}} title={`Add to "${g.name}"`}>
-              <Field label="Amount"><input type="number" inputMode="decimal" placeholder="0.00" value={contrib} onChange={e=>setContrib(e.target.value)} style={F.input} autoFocus/></Field>
-              <BigBtn onClick={()=>{const amt=parseFloat(contrib);if(!amt)return;setGoals(p=>p.map(x=>x.id===g.id?{...x,saved:x.saved+amt}:x));setContribOpen(null);setContrib("");}} color={C.green}>Save Contribution</BigBtn>
+            {!complete && (
+              <BigBtn onClick={()=>{setContribOpen(g.id);setContrib("");setContribError("");}} style={{marginTop:12}} color={C.green}>+ Add Contribution</BigBtn>
+            )}
+            <Sheet open={contribOpen===g.id} onClose={()=>{setContribOpen(null);setContrib("");setContribError("");}}>
+              <div style={{fontSize:18,fontWeight:800,color:C.text,marginBottom:4}}>Add to "{g.name}"</div>
+              <div style={{fontSize:13,color:C.muted,marginBottom:16}}>Remaining: {fmt(g.target - g.saved)}</div>
+              <Field label="Amount">
+                <AmountInput value={contrib} onChange={v=>{setContrib(v);setContribError("");}} autoFocus />
+              </Field>
+              {contribError && <div style={{color:C.red,fontSize:13,marginBottom:12,padding:"8px 12px",background:C.redLight,borderRadius:10}}>{contribError}</div>}
+              <BigBtn onClick={()=>addContribution(g)} color={C.green} disabled={!contrib || parseFloat(contrib) <= 0}>Save Contribution</BigBtn>
             </Sheet>
           </Card>
         );
       })}
       {!goals.length&&<Card><div style={{color:C.faint,fontSize:14,textAlign:"center",padding:"40px 0"}}>No goals yet</div></Card>}
 
-      <Sheet open={open} onClose={()=>setOpen(false)} title="New Savings Goal">
+      <Sheet open={open} onClose={()=>{setOpen(false);setEditItem(null);}} title={editItem ? "Edit Goal" : "New Savings Goal"}>
         <Field label="Goal Name"><input placeholder="e.g. Argentina Trip" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} style={F.input} autoFocus/></Field>
-        <Field label="Target Amount ($)"><input type="number" inputMode="decimal" placeholder="1200" value={form.target} onChange={e=>setForm(f=>({...f,target:e.target.value}))} style={F.input}/></Field>
-        <Field label="Already Saved ($)"><input type="number" inputMode="decimal" placeholder="0" value={form.saved} onChange={e=>setForm(f=>({...f,saved:e.target.value}))} style={F.input}/></Field>
-        <BigBtn onClick={()=>{if(!form.name||!form.target)return;setGoals(p=>[...p,{...form,target:parseFloat(form.target),saved:parseFloat(form.saved)||0,id:Date.now()}]);setForm({name:"",target:"",saved:""});setOpen(false);}}>Add Goal</BigBtn>
+        <Field label="Target Amount ($)">
+          <AmountInput value={form.target} onChange={v=>setForm(f=>({...f,target:v}))} placeholder="1200" />
+        </Field>
+        <Field label="Already Saved ($)">
+          <AmountInput value={form.saved} onChange={v=>setForm(f=>({...f,saved:v}))} placeholder="0" />
+        </Field>
+        <BigBtn onClick={saveGoal} disabled={!form.name || !form.target || parseFloat(form.target) <= 0}>
+          {editItem ? "Save Changes" : "Add Goal"}
+        </BigBtn>
       </Sheet>
     </div>
   );
 }
 
-// ── Net Worth ─────────────────────────────────────────────────────────────────
-function NetWorth({assets, setAssets, liabilities, setLiabilities}) {
+// ── Net Worth ────────────────────────────────────────────────────────────────
+function NetWorth({assets, setAssets, liabilities, setLiabilities, showUndo}) {
   const [openAsset, setOpenAsset] = useState(false);
   const [openLiab, setOpenLiab] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const [editType, setEditType] = useState(null);
   const [aF, setAF] = useState({name:"",value:""});
   const [lF, setLF] = useState({name:"",value:""});
   const tA=assets.reduce((s,a)=>s+a.value,0), tL=liabilities.reduce((s,l)=>s+l.value,0), nw=tA-tL;
 
-  const ItemList = ({items, onDel, color, lightBg}) => (
+  const openEditAsset = (item) => {
+    setAF({name:item.name, value:String(item.value)});
+    setEditItem(item);
+    setEditType("asset");
+    setOpenAsset(true);
+  };
+  const openEditLiab = (item) => {
+    setLF({name:item.name, value:String(item.value)});
+    setEditItem(item);
+    setEditType("liability");
+    setOpenLiab(true);
+  };
+
+  const saveAsset = () => {
+    const val = parseFloat(aF.value);
+    if (!aF.name || !val || val < 0) return;
+    if (editItem && editType === "asset") {
+      setAssets(p => p.map(a => a.id === editItem.id ? {name:aF.name, value:val, id:a.id} : a));
+    } else {
+      setAssets(p => [...p, {name:aF.name, value:val, id:uid()}]);
+    }
+    setAF({name:"",value:""});
+    setEditItem(null);
+    setOpenAsset(false);
+  };
+
+  const saveLiab = () => {
+    const val = parseFloat(lF.value);
+    if (!lF.name || !val || val < 0) return;
+    if (editItem && editType === "liability") {
+      setLiabilities(p => p.map(l => l.id === editItem.id ? {name:lF.name, value:val, id:l.id} : l));
+    } else {
+      setLiabilities(p => [...p, {name:lF.name, value:val, id:uid()}]);
+    }
+    setLF({name:"",value:""});
+    setEditItem(null);
+    setOpenLiab(false);
+  };
+
+  const delAsset = (item) => {
+    setAssets(p => p.filter(a => a.id !== item.id));
+    showUndo(`Deleted "${item.name}"`, () => setAssets(p => [...p, item]));
+  };
+  const delLiab = (item) => {
+    setLiabilities(p => p.filter(l => l.id !== item.id));
+    showUndo(`Deleted "${item.name}"`, () => setLiabilities(p => [...p, item]));
+  };
+
+  const ItemList = ({items, onDel, onEdit, color, lightBg}) => (
     items.length ? items.map((item,i)=>(
       <div key={item.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 0",borderBottom:i<items.length-1?`1px solid ${C.border}`:"none"}}>
-        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+        <div style={{display:"flex",gap:10,alignItems:"center",cursor:"pointer",flex:1}} onClick={()=>onEdit(item)}>
           <div style={{width:36,height:36,borderRadius:10,background:lightBg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}>◈</div>
           <span style={{fontSize:15,color:C.text,fontWeight:600}}>{item.name}</span>
         </div>
         <div style={{display:"flex",gap:10,alignItems:"center"}}>
           <span style={{fontWeight:700,color,fontSize:15}}>{fmt(item.value)}</span>
-          <button onClick={()=>onDel(item.id)} style={{background:C.bg,border:"none",width:30,height:30,borderRadius:99,fontSize:16,color:C.faint,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+          <button onClick={()=>onDel(item)} style={{background:C.bg,border:"none",width:30,height:30,borderRadius:99,fontSize:16,color:C.faint,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
         </div>
       </div>
     )) : <div style={{color:C.faint,fontSize:14,textAlign:"center",padding:"20px 0"}}>None added yet</div>
@@ -542,35 +904,96 @@ function NetWorth({assets, setAssets, liabilities, setLiabilities}) {
       <Card>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
           <Label>Assets · {fmt(tA)}</Label>
-          <button onClick={()=>setOpenAsset(true)} style={{background:C.greenLight,border:"none",borderRadius:99,padding:"6px 14px",color:C.green,fontSize:13,fontWeight:700,cursor:"pointer"}}>+ Add</button>
+          <button onClick={()=>{setAF({name:"",value:""});setEditItem(null);setOpenAsset(true);}} style={{background:C.greenLight,border:"none",borderRadius:99,padding:"6px 14px",color:C.green,fontSize:13,fontWeight:700,cursor:"pointer"}}>+ Add</button>
         </div>
-        <ItemList items={assets} onDel={id=>setAssets(p=>p.filter(a=>a.id!==id))} color={C.green} lightBg={C.greenLight}/>
+        <ItemList items={assets} onDel={delAsset} onEdit={openEditAsset} color={C.green} lightBg={C.greenLight}/>
       </Card>
 
       <Card>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
           <Label>Liabilities · {fmt(tL)}</Label>
-          <button onClick={()=>setOpenLiab(true)} style={{background:C.redLight,border:"none",borderRadius:99,padding:"6px 14px",color:C.red,fontSize:13,fontWeight:700,cursor:"pointer"}}>+ Add</button>
+          <button onClick={()=>{setLF({name:"",value:""});setEditItem(null);setOpenLiab(true);}} style={{background:C.redLight,border:"none",borderRadius:99,padding:"6px 14px",color:C.red,fontSize:13,fontWeight:700,cursor:"pointer"}}>+ Add</button>
         </div>
-        <ItemList items={liabilities} onDel={id=>setLiabilities(p=>p.filter(l=>l.id!==id))} color={C.red} lightBg={C.redLight}/>
+        <ItemList items={liabilities} onDel={delLiab} onEdit={openEditLiab} color={C.red} lightBg={C.redLight}/>
       </Card>
 
-      <Sheet open={openAsset} onClose={()=>setOpenAsset(false)} title="Add Asset">
+      <Sheet open={openAsset} onClose={()=>{setOpenAsset(false);setEditItem(null);}} title={editItem && editType==="asset" ? "Edit Asset" : "Add Asset"}>
         <Field label="Name"><input placeholder="e.g. Savings Account, Car" value={aF.name} onChange={e=>setAF(f=>({...f,name:e.target.value}))} style={F.input} autoFocus/></Field>
-        <Field label="Value ($)"><input type="number" inputMode="decimal" placeholder="0.00" value={aF.value} onChange={e=>setAF(f=>({...f,value:e.target.value}))} style={F.input}/></Field>
-        <BigBtn color={C.green} onClick={()=>{if(!aF.name||!aF.value)return;setAssets(p=>[...p,{...aF,value:parseFloat(aF.value),id:Date.now()}]);setAF({name:"",value:""});setOpenAsset(false);}}>Add Asset</BigBtn>
+        <Field label="Value ($)">
+          <AmountInput value={aF.value} onChange={v=>setAF(f=>({...f,value:v}))} />
+        </Field>
+        <BigBtn color={C.green} onClick={saveAsset} disabled={!aF.name || !aF.value || parseFloat(aF.value) <= 0}>
+          {editItem && editType==="asset" ? "Save Changes" : "Add Asset"}
+        </BigBtn>
       </Sheet>
 
-      <Sheet open={openLiab} onClose={()=>setOpenLiab(false)} title="Add Liability">
+      <Sheet open={openLiab} onClose={()=>{setOpenLiab(false);setEditItem(null);}} title={editItem && editType==="liability" ? "Edit Liability" : "Add Liability"}>
         <Field label="Name"><input placeholder="e.g. Student Loan, Credit Card" value={lF.name} onChange={e=>setLF(f=>({...f,name:e.target.value}))} style={F.input} autoFocus/></Field>
-        <Field label="Value ($)"><input type="number" inputMode="decimal" placeholder="0.00" value={lF.value} onChange={e=>setLF(f=>({...f,value:e.target.value}))} style={F.input}/></Field>
-        <BigBtn color={C.red} onClick={()=>{if(!lF.name||!lF.value)return;setLiabilities(p=>[...p,{...lF,value:parseFloat(lF.value),id:Date.now()}]);setLF({name:"",value:""});setOpenLiab(false);}}>Add Liability</BigBtn>
+        <Field label="Value ($)">
+          <AmountInput value={lF.value} onChange={v=>setLF(f=>({...f,value:v}))} />
+        </Field>
+        <BigBtn color={C.red} onClick={saveLiab} disabled={!lF.name || !lF.value || parseFloat(lF.value) <= 0}>
+          {editItem && editType==="liability" ? "Save Changes" : "Add Liability"}
+        </BigBtn>
       </Sheet>
     </div>
   );
 }
 
-// ── App ───────────────────────────────────────────────────────────────────────
+// ── Data Export/Import ───────────────────────────────────────────────────────
+function DataManager({transactions, budgets, goals, assets, liabilities, recurring,
+                      setTransactions, setBudgets, setGoals, setAssets, setLiabilities, setRecurring}) {
+  const fileRef = useRef(null);
+
+  const exportData = () => {
+    const data = { transactions, budgets, goals, assets, liabilities, recurring, exportedAt: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(data, null, 2)], {type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `finance-backup-${today()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importData = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if (data.transactions) setTransactions(data.transactions);
+        if (data.budgets) setBudgets(data.budgets);
+        if (data.goals) setGoals(data.goals);
+        if (data.assets) setAssets(data.assets);
+        if (data.liabilities) setLiabilities(data.liabilities);
+        if (data.recurring) setRecurring(data.recurring);
+        alert("Data imported successfully!");
+      } catch {
+        alert("Invalid backup file. Please select a valid JSON export.");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  return (
+    <div style={{marginTop:8}}>
+      <Card>
+        <Label>Data Management</Label>
+        <div style={{fontSize:13,color:C.faint,marginBottom:14}}>Back up your data or restore from a previous export.</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+          <BigBtn onClick={exportData} color={C.green}>Export Data</BigBtn>
+          <BigBtn outline onClick={()=>fileRef.current.click()}>Import Data</BigBtn>
+        </div>
+        <input ref={fileRef} type="file" accept=".json" onChange={importData} style={{display:"none"}}/>
+      </Card>
+    </div>
+  );
+}
+
+// ── App ──────────────────────────────────────────────────────────────────────
 function App() {
   const [tab, setTab] = useState(0);
   const [transactions, setTransactions] = useStorage("pf_tx",[]);
@@ -580,15 +1003,24 @@ function App() {
   const [liabilities,  setLiabilities]   = useStorage("pf_liabilities",[]);
   const [recurring,    setRecurring]     = useStorage("pf_recurring",[]);
   const dueSoon = recurring.filter(r=>daysUntil(nextDue(r.startDate,r.frequency))<=3).length;
+  const { toast, showUndo, doUndo, dismiss } = useUndo();
+  const [showData, setShowData] = useState(false);
 
-  const pages = [
-    <Dashboard transactions={transactions} budgets={budgets} goals={goals} assets={assets} liabilities={liabilities} recurring={recurring} setTab={setTab}/>,
-    <Transactions transactions={transactions} setTransactions={setTransactions}/>,
-    <Recurring recurring={recurring} setRecurring={setRecurring} setTransactions={setTransactions}/>,
-    <Budget budgets={budgets} setBudgets={setBudgets} transactions={transactions}/>,
-    <Savings goals={goals} setGoals={setGoals}/>,
-    <NetWorth assets={assets} setAssets={setAssets} liabilities={liabilities} setLiabilities={setLiabilities}/>,
-  ];
+  const swipeLeft = useCallback(() => setTab(t => Math.min(t + 1, TABS.length - 1)), []);
+  const swipeRight = useCallback(() => setTab(t => Math.max(t - 1, 0)), []);
+  const swipeHandlers = useSwipe(swipeLeft, swipeRight);
+
+  const renderTab = () => {
+    switch(tab) {
+      case 0: return <Dashboard key="home" transactions={transactions} budgets={budgets} goals={goals} assets={assets} liabilities={liabilities} recurring={recurring} setTab={setTab}/>;
+      case 1: return <Transactions key="tx" transactions={transactions} setTransactions={setTransactions} showUndo={showUndo}/>;
+      case 2: return <Recurring key="rec" recurring={recurring} setRecurring={setRecurring} setTransactions={setTransactions} showUndo={showUndo}/>;
+      case 3: return <Budget key="budget" budgets={budgets} setBudgets={setBudgets} transactions={transactions}/>;
+      case 4: return <Savings key="savings" goals={goals} setGoals={setGoals} showUndo={showUndo}/>;
+      case 5: return <NetWorth key="nw" assets={assets} setAssets={setAssets} liabilities={liabilities} setLiabilities={setLiabilities} showUndo={showUndo}/>;
+      default: return null;
+    }
+  };
 
   return (
     <div style={{height:"100%",display:"flex",flexDirection:"column",background:C.bg}}>
@@ -598,27 +1030,41 @@ function App() {
           <div style={{width:30,height:30,borderRadius:9,background:C.accentLight,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>◈</div>
           <span style={{fontWeight:800,fontSize:18,color:C.text,letterSpacing:"-0.5px"}}>Finance</span>
         </div>
-        <div style={{fontSize:12,color:C.faint,fontWeight:500}}>
-          {new Date().toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})}
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <button onClick={()=>setShowData(d=>!d)} style={{background:"none",border:"none",fontSize:18,color:C.faint,cursor:"pointer",padding:4}} title="Data Management">⚙</button>
+          <div style={{fontSize:12,color:C.faint,fontWeight:500}}>
+            {new Date().toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})}
+          </div>
         </div>
       </div>
 
       {/* Scrollable content */}
-      <div style={{flex:1,overflowY:"auto",padding:"14px 14px 0",WebkitOverflowScrolling:"touch"}}>
-        {pages[tab]}
+      <div {...swipeHandlers} style={{flex:1,overflowY:"auto",padding:"14px 14px 0",WebkitOverflowScrolling:"touch"}}>
+        {renderTab()}
+        {showData && (
+          <DataManager
+            transactions={transactions} budgets={budgets} goals={goals}
+            assets={assets} liabilities={liabilities} recurring={recurring}
+            setTransactions={setTransactions} setBudgets={setBudgets} setGoals={setGoals}
+            setAssets={setAssets} setLiabilities={setLiabilities} setRecurring={setRecurring}
+          />
+        )}
         <div style={{height:16}}/>
       </div>
+
+      {/* Toast */}
+      <Toast toast={toast} onUndo={doUndo} onDismiss={dismiss} />
 
       {/* Bottom nav */}
       <div style={{background:C.card,borderTop:`1px solid ${C.border}`,display:"flex",paddingBottom:"env(safe-area-inset-bottom)",flexShrink:0}}>
         {TABS.map((t,i)=>(
-          <button key={t.label} onClick={()=>setTab(i)} style={{flex:1,background:"none",border:"none",padding:"10px 0 8px",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:3,position:"relative",WebkitTapHighlightColor:"transparent"}}>
-            <span style={{fontSize:18,lineHeight:1,opacity:tab===i?1:0.5}}>{t.icon}</span>
-            <span style={{fontSize:9,fontWeight:700,color:tab===i?C.accent:C.faint,letterSpacing:"0.02em",textTransform:"uppercase"}}>{t.label.split(" ")[0]}</span>
+          <button key={t.label} onClick={()=>setTab(i)} style={{flex:1,background:"none",border:"none",padding:"10px 0 8px",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:2,position:"relative",WebkitTapHighlightColor:"transparent"}}>
+            <span style={{fontSize:20,lineHeight:1,opacity:tab===i?1:0.4,transition:"opacity 0.2s"}}>{t.icon}</span>
+            <span style={{fontSize:8,fontWeight:700,color:tab===i?C.accent:C.faint,letterSpacing:"0.02em",textTransform:"uppercase",transition:"color 0.2s"}}>{t.label.length>6?t.label.slice(0,6):t.label}</span>
             {t.label==="Recurring"&&dueSoon>0&&(
-              <span style={{position:"absolute",top:7,left:"calc(50% + 4px)",width:15,height:15,borderRadius:99,background:C.red,color:"#fff",fontSize:9,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center"}}>{dueSoon}</span>
+              <span style={{position:"absolute",top:5,left:"calc(50% + 6px)",width:16,height:16,borderRadius:99,background:C.red,color:"#fff",fontSize:9,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center"}}>{dueSoon}</span>
             )}
-            {tab===i&&<span style={{position:"absolute",bottom:0,left:"25%",right:"25%",height:2,background:C.accent,borderRadius:99}}/>}
+            {tab===i&&<span style={{position:"absolute",bottom:0,left:"20%",right:"20%",height:2.5,background:C.accent,borderRadius:99}}/>}
           </button>
         ))}
       </div>
@@ -626,7 +1072,7 @@ function App() {
   );
 }
 
-ReactDOM.render(<App/>, document.getElementById("root"));
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 </script>
 </body>
 </html>
